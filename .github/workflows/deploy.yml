@@ -1,0 +1,53 @@
+# Builds the backend image, pushes it to this repo's GitHub Container Registry and
+# asks Bloxity Legion to roll it out. Branch dev -> dev channel, main -> prod.
+#
+# Needs one repository secret: LEGION_DEPLOY_TOKEN (from My Games on Bloxity).
+# After the first run, make the GHCR package public (repo -> Packages -> Package
+# settings -> Change visibility) so Legion can pull it.
+name: Deploy backend
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GAME_ID: speed-shinobi-escape
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick channel
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then echo "CHANNEL=prod" >> "$GITHUB_ENV"; else echo "CHANNEL=dev" >> "$GITHUB_ENV"; fi
+          echo "IMAGE=ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/${GAME_ID}-server" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.CHANNEL }}-${{ github.sha }}
+
+      - name: Deploy on Legion
+        env:
+          LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+        run: |
+          curl -sf -X POST "https://legion.bloxity.io/v1/apps/${GAME_ID}/deploy" \
+            -H "Authorization: Bearer ${LEGION_DEPLOY_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"channel\":\"${CHANNEL}\",\"image\":\"${IMAGE}:${CHANNEL}-${GITHUB_SHA}\",\"version\":\"${GITHUB_SHA}\",\"seatCap\":8,\"maxReplicas\":5}"
